@@ -1,4 +1,3 @@
-# Import necessary Dash components
 import dash
 from dash import dcc, html
 import plotly.express as px
@@ -9,7 +8,7 @@ from datetime import datetime
 # Initialize Dash app
 app = dash.Dash(__name__)
 
-# Your database query function (example)
+# Function to query data for mentions of a single term
 def get_data_from_db(search_string):
     conn = sqlite3.connect('scraped_articles.db')
     query = f"""
@@ -22,7 +21,7 @@ def get_data_from_db(search_string):
     df = pd.read_sql(query, conn, params=[f'%{search_string}%', f'%{search_string}%'])
     conn.close()
 
-    # Convert the 'date' column to datetime format
+    # Convert 'date' column to datetime format
     df['date'] = pd.to_datetime(df['date'], errors='coerce')
 
     # Get the current year and month
@@ -46,39 +45,83 @@ def get_data_from_db(search_string):
 
     return monthly_mentions
 
-# Example: Query the database for a string
-search_string = "Brexit"
-df = get_data_from_db(search_string)
+# Function to get co-occurrence data for two terms
+def get_co_occurrences(search_string_1, search_string_2):
+    conn = sqlite3.connect('scraped_articles.db')
+    query = f"""
+    SELECT date, COUNT(*) AS co_occurrences
+    FROM articles
+    WHERE (title LIKE ? OR content LIKE ?)
+    AND (title LIKE ? OR content LIKE ?)
+    GROUP BY date
+    ORDER BY date
+    """
+    df = pd.read_sql(query, conn, params=[f'%{search_string_1}%', f'%{search_string_1}%', f'%{search_string_2}%', f'%{search_string_2}%'])
+    conn.close()
 
-# Create the initial chart
-fig = px.line(df, x='month', y='rolling_mean', title=f'Rolling Monthly Mean of Mentions for "{search_string}"')
+    # Convert 'date' to datetime format
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    df['month'] = df['date'].dt.to_period('M')
+    monthly_co_occurrences = df.groupby('month').size().reset_index(name='co_occurrences')
+    monthly_co_occurrences['month'] = monthly_co_occurrences['month'].dt.to_timestamp()
+
+    # Rolling average for smoother trends
+    monthly_co_occurrences['rolling_mean'] = monthly_co_occurrences['co_occurrences'].rolling(window=3).mean()
+
+    return monthly_co_occurrences
 
 # Layout of the Dash app
 app.layout = html.Div([
-    html.H1("Politico Mentions Analysis"),
+    html.H1("Politico Mentions and Co-occurrence Analysis"),
+    
+    # Input section for search term
     html.Div([
         html.Label("Search for a term:"),
         dcc.Input(id="input", value="Brexit", type="text"),
         html.Button('Submit', id='submit-val', n_clicks=0),
-        dcc.Graph(id="graph", figure=fig)
+        dcc.Graph(id="mentions-graph")
+    ]),
+
+    # Inputs for custom co-occurrence terms
+    html.Div([
+        html.Label("Enter two terms for co-occurrence analysis:"),
+        html.Div([
+            dcc.Input(id="term-1", value="Brexit", type="text", placeholder="Enter first term"),
+            dcc.Input(id="term-2", value="EU", type="text", placeholder="Enter second term"),
+            html.Button('Submit Co-occurrence', id='submit-cooccurrence', n_clicks=0)
+        ]),
+    ]),
+
+    # Co-occurrence Graph
+    html.Div([
+        dcc.Graph(id="co-occurrence-graph")
     ])
 ])
 
-# Update the graph based on the input value
+# Update the main graph and co-occurrence graph based on user input
 @app.callback(
-    dash.dependencies.Output('graph', 'figure'),
-    [dash.dependencies.Input('submit-val', 'n_clicks')],
-    [dash.dependencies.State('input', 'value')]
+    [dash.dependencies.Output('mentions-graph', 'figure'),
+     dash.dependencies.Output('co-occurrence-graph', 'figure')],
+    [dash.dependencies.Input('submit-val', 'n_clicks'),
+     dash.dependencies.Input('submit-cooccurrence', 'n_clicks')],
+    [dash.dependencies.State('input', 'value'),
+     dash.dependencies.State('term-1', 'value'),
+     dash.dependencies.State('term-2', 'value')]
 )
-def update_graph(n_clicks, value):
-    # Get the updated data based on the search string
-    df = get_data_from_db(value)
-    # Create the updated figure with rolling mean
-    fig = px.line(df, x='month', y='rolling_mean', title=f'Rolling Monthly Mean of Mentions for "{value}"')
-    return fig
+def update_graphs(n_clicks_mentions, n_clicks_cooccurrence, search_term, term_1, term_2):
+    # Main mentions graph for the first term
+    df_mentions = get_data_from_db(search_term)
+    fig_mentions = px.line(df_mentions, x='month', y='rolling_mean', title=f'Monthly Mentions for "{search_term}"')
+
+    # Co-occurrence graph for the two user-provided terms
+    if n_clicks_cooccurrence > 0:  # Co-occurrence terms are submitted
+        df_co_occurrence = get_co_occurrences(term_1, term_2)
+        fig_co_occurrence = px.line(df_co_occurrence, x='month', y='rolling_mean', title=f'Co-occurrence of "{term_1}" and "{term_2}"')
+    else:
+        fig_co_occurrence = px.line(title="Co-occurrence graph requires two terms to be entered")
+
+    return fig_mentions, fig_co_occurrence
 
 # Run the server
 if __name__ == '__main__':
     app.run_server(debug=True)
-
-
