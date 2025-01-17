@@ -1,13 +1,15 @@
 import requests
+import sqlite3
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from tqdm import tqdm  # For progress bar
-import time  # For sleep
-import re  # For regex matching
+import csv
+from tqdm import tqdm
+import time
 
 # Function to send the HTTP request and return the response
 def send_request(url):
     try:
+        # Send a GET request to the website with a timeout
         response = requests.get(url, timeout=10)
         response.raise_for_status()  # Raise an HTTPError for bad responses (4xx, 5xx)
         return response
@@ -20,15 +22,15 @@ def parse_html_for_links(html_content):
     soup = BeautifulSoup(html_content, 'lxml')
     return soup.find_all('a', href=True)  # Find all <a> tags with href attribute
 
-# Function to extract valid URLs from <a> tags (filter URLs by base_url)
+# Function to extract valid URLs from <a> tags (filter URLs by base_url and check for dash '-')
 def extract_urls(links, base_url):
     urls = set()  # Use a set to automatically handle duplicate URLs
     for link in links:
         href = link['href']
         full_url = urljoin(base_url, href)  # Construct full URL
-        
-        # Check if the URL starts with base_url (or any other conditions you deem fit)
-        if full_url.startswith(base_url):
+
+        # Check if the URL starts with base_url and contains a dash ('-') in the path
+        if full_url.startswith(base_url) and '-' in full_url[len(base_url):]:
             urls.add(full_url)
     return urls
 
@@ -39,7 +41,7 @@ def find_next_page(soup):
         return next_page_link['href']
     return None
 
-# Function to grab the body text from an individual article
+# Function to grab the title, author, date, and body text from an individual article
 def grab_article_body(url):
     response = send_request(url)
     if not response:
@@ -47,26 +49,49 @@ def grab_article_body(url):
 
     soup = BeautifulSoup(response.content, 'lxml')
 
-    # Find all <p> tags to extract the body text
-    paragraphs = soup.find_all('p')
+    # Extract title
+    title = soup.find('h1', class_='hero__title')  # Title has class 'hero__title'
+    title = title.get_text(strip=True) if title else "No title found"
 
-    # Combine all the paragraph texts
+    # Extract date
+    date = soup.find('span', class_='date-time__date')  # Date has class 'date-time__date'
+    date = date.get_text(strip=True) if date else "No date found"
+
+    # Extract author (from the <a> tag inside a div with class 'authors article-meta__authors')
+    author_tag = soup.find('div', class_='authors article-meta__authors ')
+    if author_tag:
+        author_link = author_tag.find('a')  # Find the <a> tag within the author section
+        author = author_link.get_text(strip=True) if author_link else "No author found"
+    else:
+        author = "No author found"
+
+    # Extract article body (all <p> tags)
+    paragraphs = soup.find_all('p')
     article_text = ' '.join([para.get_text() for para in paragraphs])
 
-    return article_text
+    return title, author, date, article_text
 
-# Function to save URLs and their associated text to a file
-def save_urls_and_text(urls, output_file="scraped_articles.txt"):
-    with open(output_file, 'w') as file:
-        for url, article_text in urls:
-            file.write(f"URL: {url}\n")
-            file.write(f"Content: {article_text}\n\n")
-    print(f"Saved {len(urls)} articles to '{output_file}'")
+# Function to save article data into a CSV file
+def save_articles_to_csv(articles, output_file="scraped_articles.csv"):
+    # Define the headers for the CSV
+    headers = ['Date', 'Author', 'Title', 'Text']
+
+    # Open the CSV file for writing
+    with open(output_file, 'w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        writer.writerow(headers)  # Write the headers
+        for article in articles:
+            # Each article is a tuple (title, author, date, text)
+            writer.writerow(article)
+
+    print(f"Saved {len(articles)} articles to '{output_file}'")
 
 # Main function to scrape the website, extract URLs, and then scrape content from each URL
-def scrape_website_for_urls(url, output_file="scraped_articles.txt", max_pages=20):
-    all_urls = set()  # Set to store all unique URLs
+def scrape_website_for_urls(url, output_file="scraped_articles.csv", max_pages=None):
+    all_articles = []  # List to store all article data (title, author, date, text)
+    all_urls = set()  # Set to store all unique article URLs
 
+    # Loop over pages and scrape articles
     for page_num in tqdm(range(1, max_pages + 1), desc="Scraping Pages"):
         # Step 1: Build the page URL and send the HTTP request
         page_url = f"{url}page/{page_num}/"
@@ -80,10 +105,8 @@ def scrape_website_for_urls(url, output_file="scraped_articles.txt", max_pages=2
 
         # Step 3: Extract and process URLs (filter by base_url)
         urls = extract_urls(links, url)
-        all_urls.update(urls)  # Add the new URLs to the set
-
-        # Debugging: print how many URLs were scraped from this page
         print(f"Scraped {len(urls)} URLs from page {page_num}")
+        all_urls.update(urls)  # Add new URLs to the set
 
         # Step 4: Find the next page URL (pagination)
         soup = BeautifulSoup(response.content, 'lxml')
@@ -92,26 +115,24 @@ def scrape_website_for_urls(url, output_file="scraped_articles.txt", max_pages=2
         if not next_page:
             break  # No next page, stop the loop
 
-        # If there is a next page, update the URL, otherwise, break the loop
         print(f"Going to next page: {next_page}")
-        time.sleep(2)  # Sleep between requests to avoid being blocked
+        time.sleep(2)  # Delay between requests to avoid overloading the server
 
-    # Step 5: Now go to each article URL and grab the body content
-    articles = []
+    # Step 5: Now grab the article content from each URL
     for article_url in all_urls:
         print(f"Scraping article: {article_url}")
-        article_text = grab_article_body(article_url)
-        if article_text:
-            articles.append((article_url, article_text))
+        title, author, date, article_text = grab_article_body(article_url)
+        if article_text:  # Only save if there's content
+            all_articles.append((date, author, title, article_text))
 
-    # Step 6: Save the scraped articles to a file
-    if articles:
-        save_urls_and_text(articles, output_file)
+    # Step 6: Save the scraped articles to a CSV
+    if all_articles:
+        save_articles_to_csv(all_articles, output_file)
     else:
         print("No articles were scraped.")
 
-    return articles  # Return the list of articles with their body content
+    return all_articles  # Return the list of articles with their content
 
 # Example usage
-base_url = "https://www.politico.eu/newsletter/london-playbook/"
-scrape_website_for_urls(base_url)
+base_url = "https://www.politico.eu/newsletter/london-playbook/"  # Use the base URL directly
+scrape_website_for_urls(base_url, output_file="scraped_articles.csv", max_pages=5)
