@@ -124,7 +124,7 @@ def get_valid_article_urls(page_url, base_url):
     return article_urls
 
 # Main function to scrape a list of URLs and save the data to the database
-def scrape_and_save_to_db(base_url, max_pages=10, db_name="scraped_articles.db"):
+def scrape_and_save_to_db(base_url, max_pages=None, db_name="scraped_articles.db"):
     create_db(db_name)  # Create the database and table if not exists
 
     all_articles = []
@@ -150,5 +150,5 @@ def scrape_and_save_to_db(base_url, max_pages=10, db_name="scraped_articles.db")
 
 # Example usage
 base_url = "https://www.politico.eu/newsletter/london-playbook"  # Base URL
-scrape_and_save_to_db(base_url, max_pages=50)
+scrape_and_save_to_db(base_url, max_pages=120)
 
